@@ -101,4 +101,3 @@ dmypy.json
 logs/
 *.log
 
-db.sqlite3
