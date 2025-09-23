@@ -1,0 +1,104 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Django stuff
+*.log
+*.pot
+*.pyc
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+local_settings.py
+
+# If using Django migrations, keep them unless you want to ignore:
+# */migrations/
+
+# Environment variables
+.env
+*.env
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+Scripts/
+bin/
+Include/
+Lib/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+desktop.ini
+
+# AWS / Terraform / CI/CD artifacts
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Python type checker
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# PyCharm
+*.iml
+*.ipr
+*.iws
+
+# Logs
+logs/
+*.log
+
+db.sqlite3
