@@ -1,7 +1,6 @@
-LABEL authors="fypabdu"
-
-# Use slim Python base
 FROM python:3.12-slim
+
+LABEL authors="fypabdu"
 
 # Prevent Python from buffering stdout
 ENV PYTHONUNBUFFERED=1
