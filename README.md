@@ -1,8 +1,10 @@
 # Prayer Times API Sri Lanka
 
-[![Build Status](https://github.com/fyapbdu/prayer-api/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/prayer-api/actions)
-[![Coverage Status](https://img.shields.io/codecov/c/github/YOUR_USERNAME/prayer-api)](https://codecov.io/gh/YOUR_USERNAME/prayer-api)
 [![Python Version](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![CI/CD](https://github.com/fypabdu/prayer-api/actions/workflows/ci.yml/badge.svg)](https://github.com/fypabdu/prayer-api/actions/workflows/ci.yml)
+[![Docker Hub](https://img.shields.io/docker/v/abu99/prayer-api?sort=semver)](https://hub.docker.com/r/abu99/prayer-api)
+[![codecov](https://codecov.io/gh/fypabdu/prayer-api/branch/main/graph/badge.svg?token=<CODECOV_TOKEN>)](https://codecov.io/gh/fypabdu/prayer-api)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 This is a lightweight Django + DRF API that serves prayer times for Sri Lanka.  
