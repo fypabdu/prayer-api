@@ -57,10 +57,10 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }} # Optional if repo is public
+          token: ${{ secrets.CODECOV_TOKEN }}
 
-  docker:
-    name: Build & Push Docker Image
+  docker-hub:
+    name: Build & Push to Docker Hub
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
@@ -70,30 +70,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Docker Hub login
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Configure AWS credentials (must be us-east-1 for ECR Public)
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      # AWS ECR Public login
-      - name: Log in to Amazon ECR Public
-        id: login-ecr-public
-        uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registry-type: public
-
       - name: Extract version
-        id: version
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
@@ -101,25 +84,56 @@ jobs:
             echo "TAG=latest" >> $GITHUB_ENV
           fi
 
-      - name: Build and Push Docker image
+      - name: Build & Push to Docker Hub
         run: |
-          # Docker Hub
           docker build -t abu99/prayer-api:${{ env.TAG }} .
           docker push abu99/prayer-api:${{ env.TAG }}
           docker tag abu99/prayer-api:${{ env.TAG }} abu99/prayer-api:latest
           docker push abu99/prayer-api:latest
 
-          # ECR Public
-          IMAGE_URI=${{ steps.login-ecr-public.outputs.registry }}/prayer-api:${{ env.TAG }}
-          docker tag abu99/prayer-api:${{ env.TAG }} $IMAGE_URI
-          docker push $IMAGE_URI
+  docker-ecr:
+    name: Build & Push to AWS ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    environment: production
 
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1   # required for ECR Public (or set to your region for Private)
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public   # change to "private" if you prefer Private ECR
+
+      - name: Extract version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          else
+            echo "TAG=latest" >> $GITHUB_ENV
+          fi
+
+      - name: Build & Push to ECR
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/prayer-api:${{ env.TAG }}
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
           echo "ECR_IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
   deploy:
     name: Deploy to AWS (Terraform)
     runs-on: ubuntu-latest
-    needs: docker
+    needs: docker-ecr   # depends only on ECR job
     if: startsWith(github.ref, 'refs/tags/v')
     environment: production
 
