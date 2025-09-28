@@ -70,11 +70,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Docker Hub login
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # AWS ECR Public login
+      - name: Log in to Amazon ECR Public
+        id: login-ecr-public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
 
       - name: Extract version
         id: version
@@ -86,12 +94,19 @@ jobs:
           fi
 
       - name: Build and Push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          push: true
-          tags: |
-            abu99/prayer-api:${{ env.TAG }}
-            abu99/prayer-api:latest
+        run: |
+          # Docker Hub
+          docker build -t abu99/prayer-api:${{ env.TAG }} .
+          docker push abu99/prayer-api:${{ env.TAG }}
+          docker tag abu99/prayer-api:${{ env.TAG }} abu99/prayer-api:latest
+          docker push abu99/prayer-api:latest
+
+          # ECR Public
+          IMAGE_URI=${{ steps.login-ecr-public.outputs.registry }}/prayer-api:${{ env.TAG }}
+          docker tag abu99/prayer-api:${{ env.TAG }} $IMAGE_URI
+          docker push $IMAGE_URI
+
+          echo "ECR_IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
   deploy:
     name: Deploy to AWS (Terraform)
@@ -132,7 +147,25 @@ jobs:
       - name: Terraform Apply
         run: terraform -chdir=infra apply -input=false -auto-approve tfplan
 
+      - name: Capture Terraform Outputs
+        id: tf-out
+        run: |
+          terraform -chdir=infra output -json > tf_outputs.json
+          cat tf_outputs.json
+
+      - name: Post Deployment Summary
+        run: |
+          URL=$(jq -r '.apprunner_service_url.value' tf_outputs.json)
+          IMAGE=$(jq -r '.deployed_image.value' tf_outputs.json)
+
+          echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service URL:** [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed Image:** \`$IMAGE\`" >> $GITHUB_STEP_SUMMARY
+
       - name: Tag Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+
+
