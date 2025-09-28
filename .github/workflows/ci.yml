@@ -114,6 +114,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Export image tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "TF_VAR_image_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          else
+            echo "TF_VAR_image_tag=latest" >> $GITHUB_ENV
+          fi
+          echo "TF_VAR_aws_region=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
+
       - name: Terraform Init
         run: terraform -chdir=infra init -input=false
 
