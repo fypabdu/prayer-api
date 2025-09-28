@@ -110,3 +110,4 @@ PRs and suggestions welcome! Please make sure tests are green before submitting.
 
 ## 📄 License
 MIT — use it, hack it, share it.
+
