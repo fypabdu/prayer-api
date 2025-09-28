@@ -115,13 +115,13 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Terraform Init
-        run: terraform -chdir=infra init -input=false
+        run: infra -chdir=infra init -input=false
 
       - name: Terraform Plan
-        run: terraform -chdir=infra plan -input=false -out=tfplan
+        run: infra -chdir=infra plan -input=false -out=tfplan
 
       - name: Terraform Apply
-        run: terraform -chdir=infra apply -input=false -auto-approve tfplan
+        run: infra -chdir=infra apply -input=false -auto-approve tfplan
 
       - name: Tag Release on GitHub
         uses: softprops/action-gh-release@v2
