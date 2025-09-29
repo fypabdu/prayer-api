@@ -96,7 +96,7 @@ jobs:
           registry-type: public
       - run: |
           TAG=${{ needs.version.outputs.tag }}
-          ECR_REPO=${{ secrets.ECR_REPO_URL }}
+          ECR_REPO=${{ vars.ECR_REPO_URL }}
           docker build -t $ECR_REPO:$TAG .
           docker push $ECR_REPO:$TAG
           echo "TF_VAR_ecr_repo_url=$ECR_REPO" >> $GITHUB_ENV
