@@ -5,7 +5,7 @@ on:
     inputs:
       image_tag:
         description: "Image tag to deploy"
-        required: false
+        required: true
         default: "latest"
 
 jobs:
@@ -13,43 +13,17 @@ jobs:
     name: Manual Deploy to AWS
     runs-on: ubuntu-latest
     environment: production
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Terraform Init
-        run: terraform -chdir=infra init -input=false
-
-      - name: Terraform Apply
+      - run: terraform -chdir=infra init -input=false
+      - run: terraform -chdir=infra apply -input=false -auto-approve
         env:
           TF_VAR_image_tag: ${{ github.event.inputs.image_tag }}
+          TF_VAR_ecr_repo_url: ${{ secrets.ECR_REPO_URL }}
           TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-        run: terraform -chdir=infra apply -input=false -auto-approve
-
-      - name: Capture Terraform Outputs
-        id: tf-out
-        run: |
-          terraform -chdir=infra output -json > tf_outputs.json
-          cat tf_outputs.json
-
-      - name: Post Deployment Summary
-        run: |
-          URL=$(jq -r '.apprunner_service_url.value' tf_outputs.json)
-          IMAGE=$(jq -r '.deployed_image.value' tf_outputs.json)
-
-          echo "## 🚀 Manual Deployment Successful" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Service URL:** [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Deployed Image:** \`$IMAGE\`" >> $GITHUB_STEP_SUMMARY
-
