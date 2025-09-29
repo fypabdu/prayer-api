@@ -14,6 +14,7 @@ jobs:
   version:
     name: Extract Version
     runs-on: ubuntu-latest
+    environment: production
     outputs:
       tag: ${{ steps.set-tag.outputs.tag }}
     steps:
@@ -66,6 +67,7 @@ jobs:
     name: Build & Push Docker Hub
     runs-on: ubuntu-latest
     needs: [test, version]
+    environment: production
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -83,6 +85,7 @@ jobs:
     name: Build & Push AWS ECR
     runs-on: ubuntu-latest
     needs: [test, version]
+    environment: production
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
