@@ -117,7 +117,7 @@ data "aws_ami" "ubuntu" {
 resource "aws_launch_template" "prayer_api" {
   name_prefix   = "prayer-api-"
   image_id      = data.aws_ami.ubuntu.id
-  instance_type = "t4g.nano"
+  instance_type = "t3.micro"
 
   user_data = base64encode(<<EOT
 #!/bin/bash
