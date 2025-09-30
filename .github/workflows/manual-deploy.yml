@@ -16,21 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
-
       - run: terraform -chdir=infra init -input=false
-
-      - run: terraform -chdir=infra plan -input=false -out=tfplan
-        env:
-          TF_VAR_image_tag: ${{ github.event.inputs.image_tag }}
-          TF_VAR_ecr_repo_url: ${{ vars.ECR_REPO_URL }}
-          TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-
-      - run: terraform -chdir=infra apply -input=false -auto-approve tfplan
+      - run: terraform -chdir=infra apply -input=false -auto-approve
         env:
           TF_VAR_image_tag: ${{ github.event.inputs.image_tag }}
           TF_VAR_ecr_repo_url: ${{ vars.ECR_REPO_URL }}

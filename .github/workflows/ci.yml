@@ -118,6 +118,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -143,12 +145,10 @@ jobs:
           terraform -chdir=infra output -json > tf_outputs.json
           cat tf_outputs.json
       - run: |
-          URL=$(jq -r '.apprunner_service_url.value' tf_outputs.json)
-          IMAGE=$(jq -r '.deployed_image.value' tf_outputs.json)
+          URL=$(jq -r '.alb_dns_name.value' tf_outputs.json)
           echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Service URL:** [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Deployed Image:** \`$IMAGE\`" >> $GITHUB_STEP_SUMMARY
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
