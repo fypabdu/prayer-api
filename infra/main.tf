@@ -105,14 +105,18 @@ resource "aws_security_group" "prayer_api" {
 # -----------------------------
 
 data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
-
+  owners = ["099720109477"]
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-arm64-server-*"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
   }
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+  most_recent = true
 }
+
 
 resource "aws_launch_template" "prayer_api" {
   name_prefix   = "prayer-api-"
@@ -150,7 +154,7 @@ resource "aws_autoscaling_group" "prayer_api" {
     aws_subnet.prayer_api_a.id,
     aws_subnet.prayer_api_b.id
   ]
-  target_group_arns   = [aws_lb_target_group.prayer_api.arn]
+  target_group_arns = [aws_lb_target_group.prayer_api.arn]
 
   tag {
     key                 = "Name"
