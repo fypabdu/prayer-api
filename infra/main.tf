@@ -30,7 +30,7 @@ resource "aws_vpc" "prayer_api" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = { Name = "prayer-api-vpc" }
+  tags                 = { Name = "prayer-api-vpc" }
 }
 
 resource "aws_internet_gateway" "prayer_api" {
@@ -43,7 +43,7 @@ resource "aws_subnet" "prayer_api_a" {
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "${var.aws_region}a"
   map_public_ip_on_launch = true
-  tags = { Name = "prayer-api-subnet-a" }
+  tags                    = { Name = "prayer-api-subnet-a" }
 }
 
 resource "aws_subnet" "prayer_api_b" {
@@ -51,7 +51,7 @@ resource "aws_subnet" "prayer_api_b" {
   cidr_block              = "10.0.2.0/24"
   availability_zone       = "${var.aws_region}b"
   map_public_ip_on_launch = true
-  tags = { Name = "prayer-api-subnet-b" }
+  tags                    = { Name = "prayer-api-subnet-b" }
 }
 
 resource "aws_route_table" "prayer_api" {
@@ -293,7 +293,10 @@ resource "aws_lb_listener" "prayer_api" {
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
     actions = ["sts:AssumeRole"]
-    principals { type = "Service", identifiers = ["ec2.amazonaws.com"] }
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
   }
 }
 
