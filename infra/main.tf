@@ -19,7 +19,7 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Needed for ALB log bucket naming
+# Needed for ALB log bucket naming & policy
 data "aws_caller_identity" "current" {}
 
 # -----------------------------
@@ -211,7 +211,7 @@ resource "aws_autoscaling_group" "prayer_api" {
 # Load Balancer (+ Access Logs)
 # -----------------------------
 
-# S3 bucket for ALB access logs
+# S3 bucket for ALB access logs (no ACLs; bucket policy used)
 resource "aws_s3_bucket" "alb_logs" {
   bucket        = "prayer-api-alb-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
   force_destroy = true
@@ -225,17 +225,15 @@ resource "aws_s3_bucket_public_access_block" "alb_logs" {
   ignore_public_acls      = true
 }
 
-# Must be created before ACL to avoid ownership errors
+# Enforce Bucket Owner; ACLs are disabled (fixes previous ACL error)
 resource "aws_s3_bucket_ownership_controls" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
-  rule { object_ownership = "BucketOwnerPreferred" }
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
 }
 
-resource "aws_s3_bucket_acl" "alb_logs" {
-  bucket = aws_s3_bucket.alb_logs.id
-  acl    = "private"
-}
-
+# 90-day lifecycle for logs
 resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
   rule {
@@ -244,6 +242,53 @@ resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
     expiration { days = 90 }
     filter {}
   }
+}
+
+# Bucket policy that allows ALB log delivery to write/list
+resource "aws_s3_bucket_policy" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "AWSLogDeliveryWrite",
+        Effect = "Allow",
+        Principal = {
+          Service = "logdelivery.elasticloadbalancing.amazonaws.com"
+        },
+        Action   = ["s3:PutObject"],
+        Resource = "${aws_s3_bucket.alb_logs.arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          },
+          ArnLike = {
+            "aws:SourceArn" = aws_lb.prayer_api.arn
+          }
+        }
+      },
+      {
+        Sid    = "AWSLogDeliveryCheck",
+        Effect = "Allow",
+        Principal = {
+          Service = "logdelivery.elasticloadbalancing.amazonaws.com"
+        },
+        Action = [
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ],
+        Resource = aws_s3_bucket.alb_logs.arn,
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          },
+          ArnLike = {
+            "aws:SourceArn" = aws_lb.prayer_api.arn
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_lb" "prayer_api" {
