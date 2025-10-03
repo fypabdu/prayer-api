@@ -19,6 +19,9 @@ provider "aws" {
   region = var.aws_region
 }
 
+# Needed for ALB log bucket naming
+data "aws_caller_identity" "current" {}
+
 # -----------------------------
 # Networking (VPC, Subnets, SG)
 # -----------------------------
@@ -27,16 +30,12 @@ resource "aws_vpc" "prayer_api" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = {
-    Name = "prayer-api-vpc"
-  }
+  tags = { Name = "prayer-api-vpc" }
 }
 
 resource "aws_internet_gateway" "prayer_api" {
   vpc_id = aws_vpc.prayer_api.id
-  tags = {
-    Name = "prayer-api-igw"
-  }
+  tags   = { Name = "prayer-api-igw" }
 }
 
 resource "aws_subnet" "prayer_api_a" {
@@ -44,9 +43,7 @@ resource "aws_subnet" "prayer_api_a" {
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "${var.aws_region}a"
   map_public_ip_on_launch = true
-  tags = {
-    Name = "prayer-api-subnet-a"
-  }
+  tags = { Name = "prayer-api-subnet-a" }
 }
 
 resource "aws_subnet" "prayer_api_b" {
@@ -54,9 +51,7 @@ resource "aws_subnet" "prayer_api_b" {
   cidr_block              = "10.0.2.0/24"
   availability_zone       = "${var.aws_region}b"
   map_public_ip_on_launch = true
-  tags = {
-    Name = "prayer-api-subnet-b"
-  }
+  tags = { Name = "prayer-api-subnet-b" }
 }
 
 resource "aws_route_table" "prayer_api" {
@@ -95,9 +90,7 @@ resource "aws_security_group" "prayer_api" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "prayer-api-sg"
-  }
+  tags = { Name = "prayer-api-sg" }
 }
 
 # -----------------------------
@@ -105,7 +98,7 @@ resource "aws_security_group" "prayer_api" {
 # -----------------------------
 
 data "aws_ami" "ubuntu" {
-  owners = ["099720109477"]
+  owners = ["099720109477"] # Canonical
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
@@ -117,27 +110,76 @@ data "aws_ami" "ubuntu" {
   most_recent = true
 }
 
+resource "aws_cloudwatch_log_group" "app" {
+  name              = "/prayer-api/app"
+  retention_in_days = 30
+}
 
 resource "aws_launch_template" "prayer_api" {
   name_prefix   = "prayer-api-"
   image_id      = data.aws_ami.ubuntu.id
   instance_type = "t3.micro"
 
-  user_data = base64encode(<<EOT
-#!/bin/bash
-apt-get update -y
-apt-get install -y docker.io
-systemctl start docker
-systemctl enable docker
-docker run -d -p 80:8000 ${var.ecr_repo_url}:${var.image_tag}
-EOT
+  # Add IAM instance profile for SSM + CloudWatch Agent
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_ssm_profile.name
+  }
+
+  user_data = base64encode(<<-EOT
+    #!/bin/bash
+    set -euxo pipefail
+
+    # --- base packages & docker ---
+    apt-get update -y
+    apt-get install -y docker.io curl
+
+    systemctl enable docker
+    systemctl start docker
+
+    # --- Amazon SSM Agent (Ubuntu 20.04) ---
+    if ! systemctl is-active --quiet amazon-ssm-agent; then
+      curl -fsSL -o /tmp/amazon-ssm-agent.deb https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb
+      dpkg -i /tmp/amazon-ssm-agent.deb || apt-get -f install -y
+      systemctl enable amazon-ssm-agent
+      systemctl restart amazon-ssm-agent
+    fi
+
+    # --- CloudWatch Agent (Ubuntu .deb) ---
+    curl -fsSL -o /tmp/amazon-cloudwatch-agent.deb https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+    dpkg -i /tmp/amazon-cloudwatch-agent.deb || apt-get -f install -y
+
+    mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+    cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CFG
+    {
+      "logs": {
+        "logs_collected": {
+          "files": {
+            "collect_list": [
+              {
+                "file_path": "/var/lib/docker/containers/*/*-json.log",
+                "log_group_name": "/prayer-api/app",
+                "log_stream_name": "{instance_id}/docker",
+                "timestamp_format": "%Y-%m-%dT%H:%M:%S.%f%z",
+                "multi_line_start_pattern": "^{"
+              }
+            ]
+          }
+        },
+        "force_flush_interval": 5
+      }
+    }
+    CFG
+
+    systemctl enable amazon-cloudwatch-agent
+    systemctl restart amazon-cloudwatch-agent
+
+    docker run -d --restart always -p 80:8000 ${var.ecr_repo_url}:${var.image_tag}
+  EOT
   )
 
   vpc_security_group_ids = [aws_security_group.prayer_api.id]
 
-  lifecycle {
-    create_before_destroy = true
-  }
+  lifecycle { create_before_destroy = true }
 }
 
 resource "aws_autoscaling_group" "prayer_api" {
@@ -166,8 +208,43 @@ resource "aws_autoscaling_group" "prayer_api" {
 }
 
 # -----------------------------
-# Load Balancer
+# Load Balancer (+ Access Logs)
 # -----------------------------
+
+# S3 bucket for ALB access logs
+resource "aws_s3_bucket" "alb_logs" {
+  bucket        = "prayer-api-alb-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_public_access_block" "alb_logs" {
+  bucket                  = aws_s3_bucket.alb_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+  ignore_public_acls      = true
+}
+
+# Must be created before ACL to avoid ownership errors
+resource "aws_s3_bucket_ownership_controls" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  rule { object_ownership = "BucketOwnerPreferred" }
+}
+
+resource "aws_s3_bucket_acl" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  acl    = "private"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  rule {
+    id     = "expire-90-days"
+    status = "Enabled"
+    expiration { days = 90 }
+    filter {}
+  }
+}
 
 resource "aws_lb" "prayer_api" {
   name               = "prayer-api-lb"
@@ -175,6 +252,12 @@ resource "aws_lb" "prayer_api" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.prayer_api.id]
   subnets            = [aws_subnet.prayer_api_a.id, aws_subnet.prayer_api_b.id]
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.bucket
+    enabled = true
+    prefix  = "alb"
+  }
 }
 
 resource "aws_lb_target_group" "prayer_api" {
@@ -184,7 +267,7 @@ resource "aws_lb_target_group" "prayer_api" {
   vpc_id   = aws_vpc.prayer_api.id
 
   health_check {
-    path                = "/"
+    path                = "/api/v1/times/today/"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
@@ -201,4 +284,37 @@ resource "aws_lb_listener" "prayer_api" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.prayer_api.arn
   }
+}
+
+# -----------------------------
+# IAM (SSM + CloudWatch Agent)
+# -----------------------------
+
+data "aws_iam_policy_document" "ec2_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals { type = "Service", identifiers = ["ec2.amazonaws.com"] }
+  }
+}
+
+resource "aws_iam_role" "ec2_ssm_role" {
+  name               = "prayer-api-ec2-ssm-role"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
+}
+
+# Core SSM access
+resource "aws_iam_role_policy_attachment" "ssm_core" {
+  role       = aws_iam_role.ec2_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# For CloudWatch Logs shipping (agent)
+resource "aws_iam_role_policy_attachment" "cw_agent" {
+  role       = aws_iam_role.ec2_ssm_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_iam_instance_profile" "ec2_ssm_profile" {
+  name = "prayer-api-ec2-ssm-profile"
+  role = aws_iam_role.ec2_ssm_role.name
 }
