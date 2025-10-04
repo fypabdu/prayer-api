@@ -1,10 +1,7 @@
 terraform {
   backend "remote" {
     organization = "abu"
-
-    workspaces {
-      name = "prayer-api"
-    }
+    workspaces { name = "prayer-api" }
   }
 
   required_providers {
@@ -19,8 +16,11 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Needed for ALB log bucket naming & policy
+# Caller/account info for ARNs and bucket names.
 data "aws_caller_identity" "current" {}
+
+# Regional ELB log-delivery account (avoids hard-coding).
+data "aws_elb_service_account" "this" {}
 
 # -----------------------------
 # Networking (VPC, Subnets, SG)
@@ -72,6 +72,7 @@ resource "aws_route_table_association" "prayer_api_b" {
   route_table_id = aws_route_table.prayer_api.id
 }
 
+# Security group used by the ALB and EC2 instances.
 resource "aws_security_group" "prayer_api" {
   vpc_id = aws_vpc.prayer_api.id
   name   = "prayer-api-sg"
@@ -97,19 +98,29 @@ resource "aws_security_group" "prayer_api" {
 # Compute (Launch Template, ASG)
 # -----------------------------
 
-data "aws_ami" "ubuntu" {
-  owners = ["099720109477"] # Canonical
+# Use Amazon Linux 2 so SSM Agent is preinstalled and enabled.
+data "aws_ami" "al2" {
+  owners      = ["137112412989"] # Amazon
+  most_recent = true
+
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+    values = ["amzn2-ami-hvm-2.0.*-x86_64-gp2"]
   }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
   filter {
     name   = "architecture"
     values = ["x86_64"]
   }
-  most_recent = true
 }
 
+
+# Log group for application/container logs.
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/prayer-api/app"
   retention_in_days = 30
@@ -117,39 +128,36 @@ resource "aws_cloudwatch_log_group" "app" {
 
 resource "aws_launch_template" "prayer_api" {
   name_prefix   = "prayer-api-"
-  image_id      = data.aws_ami.ubuntu.id
+  image_id      = data.aws_ami.al2.id
   instance_type = "t3.micro"
 
-  # Add IAM instance profile for SSM + CloudWatch Agent
   iam_instance_profile {
     name = aws_iam_instance_profile.ec2_ssm_profile.name
   }
+
+  update_default_version = true
 
   user_data = base64encode(<<-EOT
     #!/bin/bash
     set -euxo pipefail
 
-    # --- base packages & docker ---
-    apt-get update -y
-    apt-get install -y docker.io curl
+    # Ensure SSM Agent is enabled/running (AL2 has it preinstalled).
+    systemctl enable amazon-ssm-agent
+    systemctl restart amazon-ssm-agent
 
+    # Docker on Amazon Linux 2
+    yum update -y
+    amazon-linux-extras enable docker
+    yum install -y docker
     systemctl enable docker
     systemctl start docker
 
-    # --- Amazon SSM Agent (Ubuntu 20.04) ---
-    if ! systemctl is-active --quiet amazon-ssm-agent; then
-      curl -fsSL -o /tmp/amazon-ssm-agent.deb https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb
-      dpkg -i /tmp/amazon-ssm-agent.deb || apt-get -f install -y
-      systemctl enable amazon-ssm-agent
-      systemctl restart amazon-ssm-agent
-    fi
+    # Install CloudWatch Agent
+    yum install -y amazon-cloudwatch-agent
 
-    # --- CloudWatch Agent (Ubuntu .deb) ---
-    curl -fsSL -o /tmp/amazon-cloudwatch-agent.deb https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-    dpkg -i /tmp/amazon-cloudwatch-agent.deb || apt-get -f install -y
-
+    # Write CloudWatch Agent config for Docker JSON logs
     mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
-    cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<CFG
+    cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CFG'
     {
       "logs": {
         "logs_collected": {
@@ -164,15 +172,17 @@ resource "aws_launch_template" "prayer_api" {
               }
             ]
           }
-        },
-        "force_flush_interval": 5
+        }
       }
     }
     CFG
 
-    systemctl enable amazon-cloudwatch-agent
-    systemctl restart amazon-cloudwatch-agent
+    # Start CloudWatch Agent with the config
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+      -a fetch-config -m ec2 \
+      -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
 
+    # Run the application container; host :80 -> container :8000
     docker run -d --restart always -p 80:8000 ${var.ecr_repo_url}:${var.image_tag}
   EOT
   )
@@ -196,6 +206,7 @@ resource "aws_autoscaling_group" "prayer_api" {
     aws_subnet.prayer_api_a.id,
     aws_subnet.prayer_api_b.id
   ]
+
   target_group_arns = [aws_lb_target_group.prayer_api.arn]
 
   tag {
@@ -204,14 +215,23 @@ resource "aws_autoscaling_group" "prayer_api" {
     propagate_at_launch = true
   }
 
+  # Roll instances when the LT changes (AMI/user_data/etc).
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 60
+    }
+    triggers = ["launch_template"]
+  }
+
   depends_on = [aws_lb_listener.prayer_api]
 }
 
 # -----------------------------
-# Load Balancer (+ Access Logs)
+# Load Balancer and Access Logs
 # -----------------------------
 
-# S3 bucket for ALB access logs (no ACLs; bucket policy used)
 resource "aws_s3_bucket" "alb_logs" {
   bucket        = "prayer-api-alb-logs-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
   force_destroy = true
@@ -225,15 +245,12 @@ resource "aws_s3_bucket_public_access_block" "alb_logs" {
   ignore_public_acls      = true
 }
 
-# Enforce Bucket Owner; ACLs are disabled (fixes previous ACL error)
+# Use BucketOwnerPreferred to tolerate legacy ACL-based log delivery.
 resource "aws_s3_bucket_ownership_controls" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
-  rule {
-    object_ownership = "BucketOwnerEnforced"
-  }
+  rule { object_ownership = "BucketOwnerPreferred" }
 }
 
-# 90-day lifecycle for logs
 resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
   rule {
@@ -244,48 +261,51 @@ resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
   }
 }
 
-# Bucket policy that allows ALB log delivery to write/list
+# Bucket policy for ALB log delivery (regional account + service principal).
 resource "aws_s3_bucket_policy" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
       {
-        Sid    = "AWSLogDeliveryWrite",
-        Effect = "Allow",
-        Principal = {
-          Service = "logdelivery.elasticloadbalancing.amazonaws.com"
-        },
-        Action   = ["s3:PutObject"],
-        Resource = "${aws_s3_bucket.alb_logs.arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+        Sid       = "AllowElbRegionalAccountPutObject",
+        Effect    = "Allow",
+        Principal = { AWS = data.aws_elb_service_account.this.arn },
+        Action    = ["s3:PutObject"],
+        Resource  = "${aws_s3_bucket.alb_logs.arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+        Condition = {
+          StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" }
+        }
+      },
+      {
+        Sid       = "AllowAlbServicePutObject",
+        Effect    = "Allow",
+        Principal = { Service = "logdelivery.elasticloadbalancing.amazonaws.com" },
+        Action    = ["s3:PutObject"],
+        Resource  = "${aws_s3_bucket.alb_logs.arn}/alb/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
         Condition = {
           StringEquals = {
-            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          },
-          ArnLike = {
-            "aws:SourceArn" = aws_lb.prayer_api.arn
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id,
+            "s3:x-amz-acl"      = "bucket-owner-full-control"
           }
         }
       },
       {
-        Sid    = "AWSLogDeliveryCheck",
-        Effect = "Allow",
-        Principal = {
-          Service = "logdelivery.elasticloadbalancing.amazonaws.com"
-        },
-        Action = [
-          "s3:ListBucket",
-          "s3:GetBucketLocation"
-        ],
-        Resource = aws_s3_bucket.alb_logs.arn,
+        Sid       = "AllowAlbServiceListGet",
+        Effect    = "Allow",
+        Principal = { Service = "logdelivery.elasticloadbalancing.amazonaws.com" },
+        Action    = ["s3:ListBucket", "s3:GetBucketLocation"],
+        Resource  = aws_s3_bucket.alb_logs.arn,
         Condition = {
-          StringEquals = {
-            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          },
-          ArnLike = {
-            "aws:SourceArn" = aws_lb.prayer_api.arn
-          }
+          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
         }
+      },
+      {
+        Sid       = "AllowElbRegionalAccountListBucket",
+        Effect    = "Allow",
+        Principal = { AWS = data.aws_elb_service_account.this.arn },
+        Action    = ["s3:ListBucket"],
+        Resource  = aws_s3_bucket.alb_logs.arn
       }
     ]
   })
@@ -350,18 +370,19 @@ resource "aws_iam_role" "ec2_ssm_role" {
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
 }
 
-# Core SSM access
+# Core SSM access for Session Manager & inventory.
 resource "aws_iam_role_policy_attachment" "ssm_core" {
   role       = aws_iam_role.ec2_ssm_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# For CloudWatch Logs shipping (agent)
+# Permissions for CloudWatch Agent to publish logs/metrics.
 resource "aws_iam_role_policy_attachment" "cw_agent" {
   role       = aws_iam_role.ec2_ssm_role.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
+# Instance profile EC2 uses at launch.
 resource "aws_iam_instance_profile" "ec2_ssm_profile" {
   name = "prayer-api-ec2-ssm-profile"
   role = aws_iam_role.ec2_ssm_role.name
