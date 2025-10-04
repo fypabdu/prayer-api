@@ -110,3 +110,81 @@ class TestPrayerTimesAPI(APITestCase):
         # At least one result should contain an error
         error_results = [r for r in data['results'] if 'error' in r.get('times', {})]
         self.assertTrue(len(error_results) > 0)
+
+
+# --- NEW TESTS: Tahajjud -----------------------------------------------------
+
+from times.utils import compute_tahajjud  # pure-function unit test
+
+class TestTahajjud(APITestCase):
+    def test_date_times_includes_tahajjud(self):
+        # Known, stable date in the dataset used elsewhere in tests
+        resp = self.client.get('/api/v1/times/date/', {
+            'madhab': 'shafi',
+            'city': 'colombo',
+            'date': '2025-09-23'
+        })
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        body = resp.json()
+        self.assertIn('tahajjud', body['times'])
+        # Basic format check HH:MM
+        self.assertRegex(body['times']['tahajjud'], r'^\d{2}:\d{2}$')
+
+    def test_range_times_include_tahajjud_when_available(self):
+        resp = self.client.get('/api/v1/times/range/', {
+            'madhab': 'shafi',
+            'city': 'colombo',
+            'start': '2025-09-20',
+            'end': '2025-09-22'
+        })
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.json()
+        for item in data['results']:
+            # Some range entries may be errors for out-of-dataset days in other tests,
+            # so guard accordingly.
+            if 'times' in item and isinstance(item['times'], dict):
+                self.assertIn('tahajjud', item['times'])
+
+    def test_compute_tahajjud_math(self):
+        # Maghrib 18:00, next Fajr 05:00 → night = 11h → last third = 3h40m
+        # Tahajjud start = 05:00 - 3:40 = 01:20
+        self.assertEqual(compute_tahajjud("18:00", "05:00"), "01:20")
+
+
+
+from times.utils import compute_midnight  # pure-function unit test
+
+
+class TestMidnight(APITestCase):
+    def test_date_times_includes_midnight(self):
+        # Stable date used in other tests ensures dataset presence
+        resp = self.client.get('/api/v1/times/date/', {
+            'madhab': 'shafi',
+            'city': 'colombo',
+            'date': '2025-09-23'
+        })
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        body = resp.json()
+        # New field expected alongside existing ones
+        self.assertIn('midnight', body['times'])
+        self.assertRegex(body['times']['midnight'], r'^\d{2}:\d{2}$')
+
+    def test_range_times_include_midnight_when_available(self):
+        resp = self.client.get('/api/v1/times/range/', {
+            'madhab': 'shafi',
+            'city': 'colombo',
+            'start': '2025-09-20',
+            'end': '2025-09-22'
+        })
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.json()
+        for item in data['results']:
+            if 'times' in item and isinstance(item['times'], dict):
+                self.assertIn('midnight', item['times'])
+                self.assertRegex(item['times']['midnight'], r'^\d{2}:\d{2}$')
+
+    def test_compute_midnight_math(self):
+        # Maghrib 18:00 → next Fajr 05:00
+        # Night = 11 hours → half = 5h30m
+        # Midnight (half of the night) = Fajr - 5:30 = 23:30 (previous day clock time)
+        self.assertEqual(compute_midnight("18:00", "05:00"), "23:30")
