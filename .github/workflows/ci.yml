@@ -1,7 +1,7 @@
 name: CI/CD
 
 permissions:
-  contents: write
+  contents: write  # required for release notes
 
 on:
   push:
@@ -17,16 +17,22 @@ jobs:
     environment: production
     outputs:
       tag: ${{ steps.set-tag.outputs.tag }}
+      is_tag: ${{ steps.set-tag.outputs.is_tag }}
     steps:
-      - name: Extract version/tag
+      - name: Derive tag or fallback
         id: set-tag
+        shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
+            IS_TAG=true
           else
+            # Keep "latest" for branch builds; Terraform deploy is gated on tags anyway.
             TAG="latest"
+            IS_TAG=false
           fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
 
   test:
     name: Run Tests
@@ -38,27 +44,40 @@ jobs:
         python-version: [ "3.10", "3.11", "3.12" ]
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
-      - run: |
+
+      - name: Install deps
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install coverage flake8
-      - run: |
+
+      - name: Lint (error-only gate)
+        run: |
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Lint (metrics)
+        run: |
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
-      - run: |
+
+      - name: Run tests + coverage
+        run: |
           coverage run manage.py test
           coverage xml
           coverage report -m
-      - uses: codecov/codecov-action@v4
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -68,78 +87,120 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, version]
     environment: production
+    # Avoid pushing images during PRs
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-      - run: |
-          TAG=${{ needs.version.outputs.tag }}
-          docker build -t abu99/prayer-api:$TAG .
-          docker push abu99/prayer-api:$TAG
-          docker tag abu99/prayer-api:$TAG abu99/prayer-api:latest
-          docker push abu99/prayer-api:latest
+
+      - name: Build & push
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          docker build -t abu99/prayer-api:${TAG} .
+          docker push abu99/prayer-api:${TAG}
+
+          # Maintain a moving "latest" on main and on releases.
+          if [[ "${{ github.ref_type }}" == "branch" && "${{ github.ref_name }}" == "main" ]] || [[ "${{ needs.version.outputs.is_tag }}" == "true" ]]; then
+            docker tag abu99/prayer-api:${TAG} abu99/prayer-api:latest
+            docker push abu99/prayer-api:latest
+          fi
 
   ecr:
     name: Build & Push AWS ECR
     runs-on: ubuntu-latest
     needs: [test, version]
     environment: production
+    if: github.event_name != 'pull_request'
     outputs:
       ecr_repo_url: ${{ steps.set-vars.outputs.ecr_repo_url }}
       image_tag: ${{ steps.set-vars.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
+
+      # This action uses access keys; OIDC can be adopted later if desired.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-      - uses: aws-actions/amazon-ecr-login@v2
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Public ECR
         id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
         with:
           registry-type: public
-      - id: set-vars
+
+      - name: Build & push
+        id: set-vars
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          ECR_REPO: ${{ vars.ECR_REPO_URL }}
         run: |
-          TAG=${{ needs.version.outputs.tag }}
-          ECR_REPO=${{ vars.ECR_REPO_URL }}
-          docker build -t $ECR_REPO:$TAG .
-          docker push $ECR_REPO:$TAG
-          echo "ecr_repo_url=$ECR_REPO" >> $GITHUB_OUTPUT
-          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
+          docker build -t "${ECR_REPO}:${TAG}" .
+          docker push "${ECR_REPO}:${TAG}"
+
+          # Maintain a moving "latest" on main and on releases.
+          if [[ "${{ github.ref_type }}" == "branch" && "${{ github.ref_name }}" == "main" ]] || [[ "${{ needs.version.outputs.is_tag }}" == "true" ]]; then
+            docker tag "${ECR_REPO}:${TAG}" "${ECR_REPO}:latest"
+            docker push "${ECR_REPO}:latest"
+          fi
+
+          echo "ecr_repo_url=${ECR_REPO}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TAG}"         >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy to AWS (Terraform)
     runs-on: ubuntu-latest
     needs: [dockerhub, ecr]
+    # Only deploy on semantic version tags like v1.2.3
     if: startsWith(github.ref, 'refs/tags/v')
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
-      - run: terraform -chdir=infra init -input=false
-      - run: terraform -chdir=infra plan -input=false
+
+      - name: Terraform init
+        run: terraform -chdir=infra init -input=false
+
+      - name: Terraform plan
+        run: terraform -chdir=infra plan -input=false
         env:
           TF_VAR_aws_region: ${{ vars.AWS_REGION }}
           TF_VAR_ecr_repo_url: ${{ needs.ecr.outputs.ecr_repo_url }}
           TF_VAR_image_tag: ${{ needs.ecr.outputs.image_tag }}
-      - run: terraform -chdir=infra apply -input=false -auto-approve
+
+      - name: Terraform apply
+        run: terraform -chdir=infra apply -input=false -auto-approve
         env:
           TF_VAR_aws_region: ${{ vars.AWS_REGION }}
           TF_VAR_ecr_repo_url: ${{ needs.ecr.outputs.ecr_repo_url }}
           TF_VAR_image_tag: ${{ needs.ecr.outputs.image_tag }}
-      - id: tf-out
+
+      - name: Capture Terraform outputs
+        id: tf-out
         run: |
           terraform -chdir=infra output -json > tf_outputs.json
           cat tf_outputs.json
-      - run: |
+
+      - name: Summarize deployment
+        run: |
           URL=$(jq -r '.alb_dns_name.value' tf_outputs.json)
           echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Service URL:** [$URL]($URL)" >> $GITHUB_STEP_SUMMARY
-      - uses: softprops/action-gh-release@v2
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
