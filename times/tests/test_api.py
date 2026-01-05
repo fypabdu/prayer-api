@@ -24,10 +24,10 @@ class TestPrayerTimesAPI(APITestCase):
 
     def test_date_times_valid(self):
         response = self.client.get('/api/v1/times/date/', {
-            'madhab': 'hanafi', 'city': 'others', 'date': '2025-09-23'
+            'madhab': 'hanafi', 'city': 'others', 'date': '2026-09-23'
         })
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()['date'], '2025-09-23')
+        self.assertEqual(response.json()['date'], '2026-09-23')
 
     def test_date_times_invalid_format(self):
         response = self.client.get('/api/v1/times/date/', {
@@ -59,7 +59,7 @@ class TestPrayerTimesAPI(APITestCase):
     def test_range_times_valid(self):
         response = self.client.get('/api/v1/times/range/', {
             'madhab': 'shafi', 'city': 'colombo',
-            'start': '2025-09-20', 'end': '2025-09-22'
+            'start': '2026-09-20', 'end': '2026-09-22'
         })
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.json()['results']), 3)
@@ -67,7 +67,7 @@ class TestPrayerTimesAPI(APITestCase):
     def test_range_times_end_before_start(self):
         response = self.client.get('/api/v1/times/range/', {
             'madhab': 'shafi', 'city': 'colombo',
-            'start': '2025-09-23', 'end': '2025-09-20'
+            'start': '2026-09-23', 'end': '2026-09-20'
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -122,7 +122,7 @@ class TestTahajjud(APITestCase):
         resp = self.client.get('/api/v1/times/date/', {
             'madhab': 'shafi',
             'city': 'colombo',
-            'date': '2025-09-23'
+            'date': '2026-09-23'
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         body = resp.json()
@@ -134,8 +134,8 @@ class TestTahajjud(APITestCase):
         resp = self.client.get('/api/v1/times/range/', {
             'madhab': 'shafi',
             'city': 'colombo',
-            'start': '2025-09-20',
-            'end': '2025-09-22'
+            'start': '2026-09-20',
+            'end': '2026-09-22'
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         data = resp.json()
@@ -161,7 +161,7 @@ class TestMidnight(APITestCase):
         resp = self.client.get('/api/v1/times/date/', {
             'madhab': 'shafi',
             'city': 'colombo',
-            'date': '2025-09-23'
+            'date': '2026-09-23'
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         body = resp.json()
@@ -173,8 +173,8 @@ class TestMidnight(APITestCase):
         resp = self.client.get('/api/v1/times/range/', {
             'madhab': 'shafi',
             'city': 'colombo',
-            'start': '2025-09-20',
-            'end': '2025-09-22'
+            'start': '2026-09-20',
+            'end': '2026-09-22'
         })
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         data = resp.json()
