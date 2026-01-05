@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 This is a lightweight Django + DRF API that serves prayer times for Sri Lanka.  
-The dataset comes from [`prayer-time-lk`](https://github.com/thani-sh/prayer-time-lk/tree/main/data), and I’ve wrapped it in a clean, documented REST API with OpenAPI/Swagger out of the box.
+Shafi Prayer Times Data for 2026 Extracted from [`ACJU Prayer Times`](https://acju.lk), Using it I have built a clean, documented REST API with OpenAPI/Swagger out of the box.
 
 Latest deployment: [`http://prayer-api-lb-1574385576.us-east-1.elb.amazonaws.com/api/v1/docs/swagger/`](http://prayer-api-lb-1574385576.us-east-1.elb.amazonaws.com/api/v1/docs/swagger/)
 
